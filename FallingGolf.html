@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Falling Gold — HTML5 Canvas Game</title>
+  <style>
+    :root {
+      --bg: #0b1220;
+      --sky: radial-gradient(1000px 600px at 50% -200px, #1b2a52 0%, #0f1831 40%, #090f1e 100%);
+      --ui: #0e1426cc;
+      --accent: #ffd54a;
+      --accent-2: #8be9fd;
+      --good: #4caf50;
+      --bad: #f44336;
+      --white: #f7f9ff;
+    }
+    html, body { height: 100%; margin: 0; background: var(--bg); color: var(--white); font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Arial, "Apple Color Emoji", "Segoe UI Emoji"; }
+    .wrap { display: grid; place-items: center; min-height: 100dvh; padding: 16px; }
+    .frame { position: relative; width: min(92vw, 920px); }
+
+    canvas { width: 100%; height: auto; display: block; border-radius: 18px; box-shadow: 0 10px 40px #0008; background: var(--sky); }
+
+    .hud { position: absolute; inset: 0; pointer-events: none; }
+    .topbar { position: absolute; top: 10px; left: 10px; right: 10px; display: flex; gap: 12px; align-items: center; }
+    .pill { pointer-events: auto; user-select: none; padding: 8px 12px; border-radius: 999px; background: var(--ui); backdrop-filter: blur(6px); border: 1px solid #ffffff18; display: inline-flex; align-items: center; gap: 8px; font-weight: 600; letter-spacing: .2px; }
+    .spacer { flex: 1; }
+    .btn { cursor: pointer; transition: transform .08s ease; }
+    .btn:active { transform: translateY(1px); }
+
+    .center { position: absolute; inset: 0; display: grid; place-items: center; }
+
+    .panel { pointer-events: auto; background: var(--ui); border: 1px solid #ffffff1a; border-radius: 16px; padding: 18px 20px; box-shadow: 0 10px 30px #0008; max-width: 560px; }
+    .panel h1 { margin: 0 0 8px; font-size: clamp(22px, 3.5vw, 32px); }
+    .panel p { margin: 8px 0; opacity: .9; }
+    .panel .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 12px; }
+    .panel .grid .btn { text-align: center; padding: 10px 12px; border-radius: 12px; background: #11183bcc; border: 1px solid #ffffff22; }
+
+    .toast { position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%); padding: 6px 10px; border-radius: 10px; background: var(--ui); border: 1px solid #ffffff1a; font-size: 13px; opacity: .9; }
+    .kbd { background: #fff2; padding: 2px 6px; border-radius: 6px; border: 1px solid #fff3; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size: .9em; }
+
+    a { color: var(--accent-2); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="frame">
+      <canvas id="game" width="900" height="560" aria-label="Falling Gold game"></canvas>
+      <div class="hud" aria-hidden="true">
+        <div class="topbar">
+          <div class="pill" id="scorePill">Score: <span id="score">0</span></div>
+          <div class="pill">Time: <span id="time">60.0</span>s</div>
+          <div class="pill">Caught: <span id="caught">0</span></div>
+          <div class="spacer"></div>
+          <div class="pill btn" id="muteBtn" title="Toggle sound">🔊 Sound</div>
+          <div class="pill btn" id="pauseBtn" title="Pause/Resume">⏸️ Pause</div>
+          <div class="pill btn" id="restartBtn" title="Restart">🔄 Restart</div>
+        </div>
+        <div class="center" id="overlay">
+          <div class="panel" role="dialog" aria-modal="true">
+            <h1>Falling Gold</h1>
+            <p>Use <span class="kbd">←</span><span class="kbd">↑</span><span class="kbd">→</span><span class="kbd">↓</span> to move the basket and catch as much gold as you can in 60 seconds. The basket is confined to the sky.</p>
+            <div class="grid">
+              <div class="btn" id="startBtn">▶️ Start</div>
+              <div class="btn" id="howBtn">❓ How to Play</div>
+            </div>
+            <p style="margin-top:10px;font-size:13px;opacity:.8">Tip: Bigger gold = more points. Missing gold slightly reduces your score.</p>
+          </div>
+        </div>
+        <div class="toast">Made with HTML5 Canvas + JS — no frameworks</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // --- Utility ---
+    const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+    const rand = (a, b) => Math.random() * (b - a) + a;
+    const choice = (arr) => arr[Math.floor(Math.random() * arr.length)];
+
+    // --- Audio (WebAudio, lightweight) ---
+    const AudioSys = (() => {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      let muted = false;
+      function beep({freq=523, dur=0.08, type='sine', gain=0.03, slide=0}) {
+        if (muted) return;
+        const o = ctx.createOscillator();
+        const g = ctx.createGain();
+        o.type = type;
+        o.frequency.value = freq;
+        if (slide) {
+          o.frequency.linearRampToValueAtTime(freq + slide, ctx.currentTime + dur);
+        }
+        g.gain.value = gain;
+        o.connect(g); g.connect(ctx.destination);
+        o.start();
+        o.stop(ctx.currentTime + dur);
+      }
+      function noise({dur=0.12, gain=0.02}) {
+        if (muted) return;
+        const buffer = ctx.createBuffer(1, ctx.sampleRate * dur, ctx.sampleRate);
+        const data = buffer.getChannelData(0);
+        for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+        const src = ctx.createBufferSource();
+        const g = ctx.createGain();
+        g.gain.value = gain;
+        src.buffer = buffer; src.connect(g); g.connect(ctx.destination); src.start();
+      }
+      function setMuted(v) { muted = v; }
+      function isMuted() { return muted; }
+      return { beep, noise, setMuted, isMuted, ctx };
+    })();
+
+    // --- Game State ---
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d');
+
+    const ui = {
+      score: document.getElementById('score'),
+      time: document.getElementById('time'),
+      caught: document.getElementById('caught'),
+      overlay: document.getElementById('overlay'),
+      startBtn: document.getElementById('startBtn'),
+      howBtn: document.getElementById('howBtn'),
+      pauseBtn: document.getElementById('pauseBtn'),
+      restartBtn: document.getElementById('restartBtn'),
+      muteBtn: document.getElementById('muteBtn'),
+    };
+
+    const SKY = { w: canvas.width, h: canvas.height };
+
+    const keys = new Set();
+
+    const state = {
+      running: false,
+      paused: false,
+      timeLeft: 60,
+      score: 0,
+      caught: 0,
+      golds: [],
+      particles: [],
+      lastSpawn: 0,
+      spawnEvery: 320, // ms, tuned dynamically
+      difficulty: 1,
+      basket: { x: SKY.w/2, y: SKY.h - 70, w: 120, h: 28, speed: 320 },
+      lastFrame: 0,
+    };
+
+    function resetGame() {
+      state.running = false;
+      state.paused = false;
+      state.timeLeft = 60;
+      state.score = 0; state.caught = 0;
+      state.golds = []; state.particles = [];
+      state.lastSpawn = 0; state.spawnEvery = 320; state.difficulty = 1;
+      state.basket.x = SKY.w/2; state.basket.y = SKY.h - 70; state.basket.w = 120; state.basket.h = 28;
+      ui.score.textContent = '0';
+      ui.caught.textContent = '0';
+      ui.time.textContent = state.timeLeft.toFixed(1);
+      drawScene(0); // draw initial sky
+    }
+
+    // --- Entities ---
+    function spawnGold() {
+      const r = rand(8, 22); // radius
+      const sizeMult = r / 22; // for scoring
+      const x = rand(r + 4, SKY.w - r - 4);
+      const y = -r - 10;
+      const vy = rand(120, 220) * (0.9 + state.difficulty * 0.1);
+      const vx = rand(-35, 35);
+      const type = choice(['coin','nugget']);
+      state.golds.push({ x, y, r, vy, vx, type, rot: rand(0, Math.PI*2), spin: rand(-2, 2), caught: false });
+    }
+
+    function addBurst(x, y, color) {
+      for (let i = 0; i < 18; i++) {
+        state.particles.push({ x, y, vx: rand(-140, 140), vy: rand(-60, -220), g: 520, life: rand(0.35, 0.6), age: 0, color, size: rand(1, 3) });
+      }
+    }
+
+    function drawGold(g) {
+      const grd = ctx.createRadialGradient(g.x - g.r*0.3, g.y - g.r*0.5, g.r*0.1, g.x, g.y, g.r);
+      grd.addColorStop(0, '#fff8');
+      grd.addColorStop(0.15, '#ffe680');
+      grd.addColorStop(0.5, '#ffcc33');
+      grd.addColorStop(1, '#b8860b');
+
+      ctx.save();
+      ctx.translate(g.x, g.y); ctx.rotate(g.rot); ctx.translate(-g.x, -g.y);
+      ctx.beginPath();
+      if (g.type === 'coin') {
+        ctx.ellipse(g.x, g.y, g.r, g.r*0.82, 0, 0, Math.PI*2);
+      } else {
+        // nugget: blobby
+        ctx.moveTo(g.x + g.r, g.y);
+        for (let a = 0; a < Math.PI*2; a+=Math.PI/6) {
+          const rr = g.r * (0.8 + Math.sin(a*3 + g.rot)*0.12 + Math.random()*0.04);
+          ctx.lineTo(g.x + Math.cos(a)*rr, g.y + Math.sin(a)*rr);
+        }
+        ctx.closePath();
+      }
+      ctx.fillStyle = grd;
+      ctx.shadowColor = '#ffea7a88';
+      ctx.shadowBlur = 20;
+      ctx.fill();
+      ctx.restore();
+    }
+
+    function drawBasket(b) {
+      const x = b.x - b.w/2, y = b.y - b.h/2, w = b.w, h = b.h;
+      const r = 12;
+      ctx.save();
+      // body
+      ctx.beginPath();
+      ctx.moveTo(x+r, y);
+      ctx.lineTo(x+w-r, y);
+      ctx.quadraticCurveTo(x+w, y, x+w, y+r);
+      ctx.lineTo(x+w, y+h-r);
+      ctx.quadraticCurveTo(x+w, y+h, x+w-r, y+h);
+      ctx.lineTo(x+r, y+h);
+      ctx.quadraticCurveTo(x, y+h, x, y+h-r);
+      ctx.lineTo(x, y+r);
+      ctx.quadraticCurveTo(x, y, x+r, y);
+      const grd = ctx.createLinearGradient(x, y, x, y+h);
+      grd.addColorStop(0, '#5c3b1e');
+      grd.addColorStop(1, '#2c1e10');
+      ctx.fillStyle = grd; ctx.fill();
+      ctx.strokeStyle = '#8b5a2b'; ctx.lineWidth = 2; ctx.stroke();
+      // rim
+      ctx.beginPath();
+      ctx.roundRect(x-6, y-8, w+12, 14, 8);
+      ctx.fillStyle = '#d2a679'; ctx.fill();
+      ctx.globalAlpha = .35; ctx.fillStyle = '#fff'; ctx.fillRect(x, y-7, w, 6); ctx.globalAlpha = 1;
+      ctx.restore();
+    }
+
+    function drawParticles(dt) {
+      for (let i = state.particles.length - 1; i >= 0; i--) {
+        const p = state.particles[i];
+        p.age += dt; if (p.age > p.life) { state.particles.splice(i,1); continue; }
+        const t = p.age; // update
+        p.vy += p.g * dt;
+        p.x += p.vx * dt; p.y += p.vy * dt;
+        ctx.globalAlpha = 1 - (t / p.life);
+        ctx.fillStyle = p.color; ctx.fillRect(p.x, p.y, p.size, p.size);
+        ctx.globalAlpha = 1;
+      }
+    }
+
+    // --- Input ---
+    window.addEventListener('keydown', (e) => {
+      if (["ArrowLeft","ArrowRight","ArrowUp","ArrowDown"," ","Space"].includes(e.key)) e.preventDefault();
+      keys.add(e.key);
+      // resume audio on first interaction
+      if (AudioSys.ctx.state === 'suspended') AudioSys.ctx.resume();
+    });
+    window.addEventListener('keyup', (e) => keys.delete(e.key));
+
+    // --- Main Loop ---
+    function update(dt, now) {
+      if (!state.running || state.paused) return;
+      // Difficulty ramps up
+      state.difficulty = 1 + (1 - state.timeLeft / 60) * 1.5;
+      state.spawnEvery = clamp(320 - state.difficulty * 100, 90, 320);
+
+      // Timer
+      state.timeLeft = clamp(state.timeLeft - dt, 0, 999);
+      ui.time.textContent = state.timeLeft.toFixed(1);
+      if (state.timeLeft <= 0) { endGame(); return; }
+
+      // Basket movement
+      const b = state.basket; let ax = 0, ay = 0;
+      if (keys.has('ArrowLeft')) ax -= 1;
+      if (keys.has('ArrowRight')) ax += 1;
+      if (keys.has('ArrowUp')) ay -= 1;
+      if (keys.has('ArrowDown')) ay += 1;
+      const spd = b.speed * (keys.has('Shift') ? 1.6 : 1);
+      const len = Math.hypot(ax, ay) || 1;
+      b.x += (ax/len) * spd * dt; b.y += (ay/len) * spd * dt;
+      // Confine to sky
+      b.x = clamp(b.x, b.w/2, SKY.w - b.w/2);
+      b.y = clamp(b.y, b.h/2 + 20, SKY.h - b.h/2 - 6);
+
+      // Spawn gold
+      if (now - state.lastSpawn > state.spawnEvery) {
+        state.lastSpawn = now; spawnGold();
+      }
+
+      // Update gold
+      for (let i = state.golds.length - 1; i >= 0; i--) {
+        const g = state.golds[i];
+        g.x += g.vx * dt; g.y += g.vy * dt; g.rot += g.spin * dt;
+        // gentle wind bounce on walls
+        if (g.x - g.r < 0 && g.vx < 0) g.vx *= -0.8;
+        if (g.x + g.r > SKY.w && g.vx > 0) g.vx *= -0.8;
+
+        // Collision with basket (AABB vs circle)
+        const bx = state.basket.x - state.basket.w/2, by = state.basket.y - state.basket.h/2;
+        const closestX = clamp(g.x, bx, bx + state.basket.w);
+        const closestY = clamp(g.y, by, by + state.basket.h);
+        const dx = g.x - closestX, dy = g.y - closestY;
+        if (dx*dx + dy*dy <= g.r*g.r) {
+          // caught
+          const sizeScore = Math.round(5 + (g.r - 8) * 1.4);
+          state.score += sizeScore; state.caught += 1;
+          ui.score.textContent = state.score.toString();
+          ui.caught.textContent = state.caught.toString();
+          addBurst(g.x, g.y, '#ffd54a');
+          AudioSys.beep({freq: 740, dur: 0.05, type:'square', gain: 0.04, slide: 120});
+          state.golds.splice(i,1); continue;
+        }
+
+        // Missed (fell below)
+        if (g.y - g.r > SKY.h) {
+          state.score = Math.max(0, state.score - 2);
+          ui.score.textContent = state.score.toString();
+          addBurst(g.x, SKY.h-6, '#f44336');
+          AudioSys.noise({dur: 0.06, gain: 0.02});
+          state.golds.splice(i,1);
+        }
+      }
+
+      // Particles
+      drawScene(dt);
+    }
+
+    function drawScene(dt) {
+      // background stars
+      ctx.clearRect(0, 0, SKY.w, SKY.h);
+      // subtle stars
+      ctx.save();
+      for (let i = 0; i < 40; i++) {
+        ctx.globalAlpha = 0.2;
+        ctx.fillStyle = '#ffffff';
+        const x = (i * 131) % SKY.w; const y = (i * 73) % SKY.h * 0.6 + 10;
+        ctx.fillRect(x, y, 2, 2);
+      }
+      ctx.restore();
+
+      // horizon glow
+      const g = ctx.createLinearGradient(0, SKY.h-120, 0, SKY.h);
+      g.addColorStop(0, '#ffffff08'); g.addColorStop(1, '#0000');
+      ctx.fillStyle = g; ctx.fillRect(0, SKY.h-140, SKY.w, 140);
+
+      // draw entities
+      for (const coin of state.golds) drawGold(coin);
+      drawBasket(state.basket);
+      drawParticles(dt);
+
+      // ground line
+      ctx.globalAlpha = .2; ctx.fillStyle = '#00f'; ctx.fillRect(0, SKY.h-4, SKY.w, 4); ctx.globalAlpha = 1;
+    }
+
+    function loop(ts) {
+      if (!state.lastFrame) state.lastFrame = ts;
+      const dt = Math.min(0.033, (ts - state.lastFrame) / 1000);
+      state.lastFrame = ts;
+      update(dt, ts);
+      requestAnimationFrame(loop);
+    }
+
+    function startGame() {
+      resetGame();
+      state.running = true; ui.overlay.style.display = 'none';
+      AudioSys.beep({freq: 523, dur: 0.08, type:'sawtooth', gain:0.03});
+      AudioSys.beep({freq: 659, dur: 0.08, type:'sawtooth', gain:0.03});
+      AudioSys.beep({freq: 784, dur: 0.1, type:'sawtooth', gain:0.03});
+    }
+
+    function endGame() {
+      state.running = false;
+      ui.overlay.style.display = 'grid';
+      const panel = ui.overlay.querySelector('.panel');
+      panel.innerHTML = `
+        <h1>Time Up!</h1>
+        <p>Your score: <strong>${state.score}</strong> — Gold caught: <strong>${state.caught}</strong></p>
+        <div class="grid">
+          <div class="btn" id="playAgainBtn">🔁 Play Again</div>
+          <div class="btn" id="shareBtn">📤 Share</div>
+        </div>
+        <p style="margin-top:10px;font-size:13px;opacity:.85">Pro tip: Hold <span class="kbd">Shift</span> to dash.</p>
+      `;
+      panel.querySelector('#playAgainBtn').onclick = () => startGame();
+      panel.querySelector('#shareBtn').onclick = () => {
+        const text = `I scored ${state.score} in Falling Gold!`;
+        const url = location.href;
+        if (navigator.share) navigator.share({ title: 'Falling Gold', text, url });
+        else alert(text + "\n" + url);
+      };
+      AudioSys.beep({freq: 262, dur: 0.2, type:'triangle', gain:0.04});
+    }
+
+    // --- UI wiring ---
+    ui.startBtn.onclick = () => startGame();
+    ui.howBtn.onclick = () => alert('Catch falling gold with the basket. Use arrow keys to move (Shift to dash). Bigger gold is worth more points. Missing gold costs a little score. 60-second timer.');
+
+    ui.pauseBtn.onclick = () => {
+      if (!state.running) return;
+      state.paused = !state.paused;
+      ui.pauseBtn.textContent = state.paused ? '▶️ Resume' : '⏸️ Pause';
+      if (!state.paused) { state.lastFrame = performance.now(); }
+      AudioSys.beep({freq: state.paused ? 330 : 523, dur: 0.06, type:'square'});
+    };
+
+    ui.restartBtn.onclick = () => { startGame(); };
+
+    ui.muteBtn.onclick = () => {
+      const m = !AudioSys.isMuted();
+      AudioSys.setMuted(m);
+      ui.muteBtn.textContent = m ? '🔇 Muted' : '🔊 Sound';
+    };
+
+    // touch controls (optional): swipe / virtual dpad
+    let touch = null;
+    canvas.addEventListener('touchstart', (e) => {
+      const t = e.changedTouches[0];
+      touch = { id: t.identifier, x: t.clientX, y: t.clientY };
+      e.preventDefault();
+    }, {passive:false});
+    canvas.addEventListener('touchmove', (e) => {
+      if (!touch) return; const t = [...e.changedTouches].find(tt => tt.identifier === touch.id); if (!t) return;
+      const rect = canvas.getBoundingClientRect();
+      const cx = (t.clientX - rect.left) / rect.width * SKY.w;
+      const cy = (t.clientY - rect.top) / rect.height * SKY.h;
+      state.basket.x = clamp(cx, state.basket.w/2, SKY.w - state.basket.w/2);
+      state.basket.y = clamp(cy, state.basket.h/2 + 20, SKY.h - state.basket.h/2 - 6);
+      e.preventDefault();
+    }, {passive:false});
+    canvas.addEventListener('touchend', () => { touch = null; });
+
+    // boot
+    resetGame();
+    requestAnimationFrame(loop);
+  </script>
+</body>
+</html>
